@@ -10,3 +10,5 @@ edition = "2018"
 byteorder = "1"
 tokio = { version = "1", features = ["full"] }
 yaml-rust = "0.4"
+pretty-hex = "0.2.1"
+
