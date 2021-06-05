@@ -49,11 +49,16 @@ pub async fn handle_connection(mut stream: tokio::net::TcpStream) -> Result<usiz
     while not_finished
     {
         stream.write_all(b">.").await?;
-        let line = read_line(&mut stream).await?;
+        let line = read_line(&mut stream).await?.to_lowercase();
 
         if line == "quit"
         {
             not_finished = false;
+        }
+        else if line == "help"
+        {
+            stream.write_all(b"\x0c\x1E").await?;
+            load_page_to_stream(&mut stream,"help.tti",100).await?;
         }
         println!("Line:{}",line);
     }
@@ -102,7 +107,7 @@ use pretty_hex::*;
 
 pub async fn de_escape(stream: &mut tokio::net::TcpStream, buf:&[u8]) -> Result<u8,std::io::Error>
 {
-
+    let mut repeat = 0;
 
     println!("{}", buf.hex_dump());
 
@@ -111,13 +116,17 @@ pub async fn de_escape(stream: &mut tokio::net::TcpStream, buf:&[u8]) -> Result<
     {
         if prev == 0x1B
         {
+            if *i == 0x4d
+            {
+                repeat = 1;
+            }
             println!("Esc:{}",*i-(0x40 as u8));
             stream.write_u8(*i+(0x40 as u8)).await?;
         }
         else if *i != 0x1B 
         {
             let mut ch = *i;
-            if (*i > 0x20)
+            if (*i > 0x20 && *i < 0x80)
             {
                 ch = *i + 128;
             }
@@ -126,7 +135,7 @@ pub async fn de_escape(stream: &mut tokio::net::TcpStream, buf:&[u8]) -> Result<
         prev = *i;
     }
 
-    return Ok(0);
+    return Ok(repeat);
 }
 
 pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &str, page_no:u8) -> Result<String,std::io::Error>
@@ -149,7 +158,7 @@ pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &s
 
     let mut command = None;
     let mut line = None;
-    
+
     for i in &buf 
     {
         if *i == b','
@@ -204,14 +213,19 @@ pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &s
             } 
             if print
             {
-                std::io::Write::write_all(&mut std::io::stdout(),&buf[y..x-1]).unwrap();
+                //std::io::Write::write_all(&mut std::io::stdout(),&buf[y..x-1]).unwrap();
                 println!("{},{}:",cur_ol,prev_ol);
 
-                if (prev_ol+1 != cur_ol)
+                if prev_ol+1 != cur_ol
                 {
                     stream.write(b"\r\n").await?;
                 }
-                de_escape(stream,&buf[y..x-2]).await?;
+                if de_escape(stream,&buf[y..x-2]).await? == 1
+                {
+                    stream.write(b" ").await?;
+                    de_escape(stream,&buf[y..x-2]).await?;
+                    cur_ol = cur_ol + 1;
+                }
                 //stream.write(&buf[y..x-1]).await?;
                 stream.write(b"\r\n").await?;
             }
