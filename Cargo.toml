@@ -8,7 +8,9 @@ edition = "2018"
 
 [dependencies]
 byteorder = "1"
+hyper = { version = "0.14", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 yaml-rust = "0.4"
 pretty-hex = "0.2.1"
+url = { version = "2", features = [] }
 

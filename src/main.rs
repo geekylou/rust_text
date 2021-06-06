@@ -10,6 +10,7 @@ use
     std::io::Read,
 };
 
+
 #[tokio::main]
 pub async fn main() 
 {
@@ -65,6 +66,14 @@ pub async fn handle_connection(mut stream: tokio::net::TcpStream) -> Result<usiz
             stream.write_all(b"\x0c\x1E").await?; //Welcome To RustTex.\r\n").await?;
 
             load_page_to_stream(&mut stream,"title.tti",100).await?;
+            stream.write_all(b"\r\n").await?;
+        }
+        else if line == "http"
+        {
+            stream.write_all(b"ADDR:").await?;
+            let url = read_line(&mut stream).await?.to_lowercase();
+            load_page_from_addr(&mut stream, &url).await?;
+
             stream.write_all(b"\r\n").await?;
         }
         println!("Line:{}",line);
@@ -129,7 +138,7 @@ pub async fn de_escape(stream: &mut tokio::net::TcpStream, buf:&[u8]) -> Result<
         {
 
         }
-        if prev == 0x1B
+        else if prev == 0x1B
         {
             if *i == 0x4d
             {
@@ -153,7 +162,40 @@ pub async fn de_escape(stream: &mut tokio::net::TcpStream, buf:&[u8]) -> Result<
     return Ok(repeat);
 }
 
-pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &str, page_no:u8) -> Result<String,std::io::Error>
+pub async fn load_page_from_addr(stream_out: &mut tokio::net::TcpStream,url_str: &str) -> Result<u8,std::io::Error>
+{
+    use hyper::Client;
+    let client = Client::new();
+    let uri_res = url_str.parse();
+    
+    match uri_res 
+    {
+        Ok(uri) => {
+            let resp_r = client.get(uri).await;
+
+            if let Ok(resp) = resp_r
+            {
+                println!("Response: {}", resp.status());
+
+                let buf_r = hyper::body::to_bytes(resp.into_body()).await;
+
+                if let Ok(buf) = buf_r
+                {
+                    stream_out.write_all(b"\x0c\x1E").await?;
+                    render_page_to_stream(stream_out,&buf, 0).await?;
+                }
+                
+            }
+        },
+        Err(_e) => {stream_out.write_all(b"Couldn't load page.").await?;}
+    }
+
+    return Ok(0);
+}
+
+
+
+pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &str, page_no:u8) -> Result<u8,std::io::Error>
 {
    
     let mut buf = Vec::new();
@@ -165,6 +207,11 @@ pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &s
     println!("Buf:{}",x);
     //std::io::Write::write_all(&mut std::io::stdout(),&buf);
 
+    return render_page_to_stream(stream,&buf, page_no).await
+}
+
+pub async fn render_page_to_stream(stream: &mut tokio::net::TcpStream,buf: &[u8], page_no:u8) -> Result<u8,std::io::Error>
+{
     let mut x = 0;
     let mut y = 0;
     let mut prev_ol = 0;
@@ -176,7 +223,7 @@ pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &s
 
     // This loop splits the page into lines and extracts the entries marked OL,<Line-no> where line-no > 0.
     // It's not yet clever enough to handle sub-pages but that will be coming in the future!
-    for i in &buf 
+    for i in buf 
     {
         if *i == b','
         {
@@ -239,7 +286,6 @@ pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &s
                 }
                 if de_escape(stream,&buf[y..x-1]).await? == 1
                 {
-                    stream.write(b" ").await?;
                     de_escape(stream,&buf[y..x-1]).await?;
                     cur_ol = cur_ol + 1;
                 }
@@ -256,5 +302,5 @@ pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &s
         }
         x = x + 1;
     }
-    return Ok(String::from(""));
+    return Ok(0);
 }
