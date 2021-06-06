@@ -21,7 +21,7 @@ pub async fn main()
         let stream = listener.accept().await;
 
         match stream {
-            Ok(mut stream) => {
+            Ok(stream) => {
                 //let mut stream = stream;
                 println!("new client!");
                 
@@ -33,7 +33,7 @@ pub async fn main()
                     Err(e) => println!("Connection lost {}",e),
                 }
             }
-            Err(e) => { /* connection failed */ }
+            Err(_e) => { /* connection failed */ }
         }
     }
 }
@@ -59,6 +59,13 @@ pub async fn handle_connection(mut stream: tokio::net::TcpStream) -> Result<usiz
         {
             stream.write_all(b"\x0c\x1E").await?;
             load_page_to_stream(&mut stream,"help.tti",100).await?;
+        }
+        else if line == "menu"
+        {
+            stream.write_all(b"\x0c\x1E").await?; //Welcome To RustTex.\r\n").await?;
+
+            load_page_to_stream(&mut stream,"title.tti",100).await?;
+            stream.write_all(b"\r\n").await?;
         }
         println!("Line:{}",line);
     }
@@ -105,6 +112,8 @@ pub async fn read_line(stream: &mut tokio::net::TcpStream) -> Result<String,toki
 
 use pretty_hex::*;
 
+// This translates the escape codes to create text data which is understood by the BBC mircro.
+// It will return Ok(1) if double height characters are used.
 pub async fn de_escape(stream: &mut tokio::net::TcpStream, buf:&[u8]) -> Result<u8,std::io::Error>
 {
     let mut repeat = 0;
@@ -114,6 +123,12 @@ pub async fn de_escape(stream: &mut tokio::net::TcpStream, buf:&[u8]) -> Result<
     let mut prev = 0;
     for i in buf
     {
+        // Strip out carriage returns and line feeds as they shouldn't be within the line data 
+        // and we add our own.
+        if *i == b'\r' || *i == b'\n'
+        {
+
+        }
         if prev == 0x1B
         {
             if *i == 0x4d
@@ -126,7 +141,7 @@ pub async fn de_escape(stream: &mut tokio::net::TcpStream, buf:&[u8]) -> Result<
         else if *i != 0x1B 
         {
             let mut ch = *i;
-            if (*i > 0x20 && *i < 0x80)
+            if *i > 0x20 && *i < 0x80
             {
                 ch = *i + 128;
             }
@@ -159,6 +174,8 @@ pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &s
     let mut command = None;
     let mut line = None;
 
+    // This loop splits the page into lines and extracts the entries marked OL,<Line-no> where line-no > 0.
+    // It's not yet clever enough to handle sub-pages but that will be coming in the future!
     for i in &buf 
     {
         if *i == b','
@@ -205,7 +222,7 @@ pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &s
                         match s.parse::<i32>()
                         {
                             Ok(ol) => cur_ol = ol,
-                            Err(e) => {} 
+                            Err(_e) => {} 
                         }
                     }
                 }
@@ -220,10 +237,10 @@ pub async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &s
                 {
                     stream.write(b"\r\n").await?;
                 }
-                if de_escape(stream,&buf[y..x-2]).await? == 1
+                if de_escape(stream,&buf[y..x-1]).await? == 1
                 {
                     stream.write(b" ").await?;
-                    de_escape(stream,&buf[y..x-2]).await?;
+                    de_escape(stream,&buf[y..x-1]).await?;
                     cur_ol = cur_ol + 1;
                 }
                 //stream.write(&buf[y..x-1]).await?;

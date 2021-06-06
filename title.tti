@@ -7,7 +7,8 @@ PS,8000
 CT,8,T
 RE,0
 OL,0,XXXXXXXXTEEFAX 122 DAY dd MTH C hh:nn.ss
-OL,2,V  `~t             
+OL,2,V  xt             
 OL,3, VM GWelcome To RustTexV              
-OL,5, V "o'             
-OL,7,   Q!%55j*" 7###k                       
+OL,5, V +'             
+OL,7,BHELPC-FGet help on using RustTex.      
+OL,8,BMENUC-FRedraw this menu.               
