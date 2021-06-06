@@ -76,6 +76,10 @@ pub async fn handle_connection(mut stream: tokio::net::TcpStream) -> Result<usiz
 
             stream.write_all(b"\r\n").await?;
         }
+        else if line == "cls"
+        {
+            stream.write_all(b"\x0c").await?;
+        }
         println!("Line:{}",line);
     }
     return Ok(0);
@@ -167,7 +171,8 @@ pub async fn load_page_from_addr(stream_out: &mut tokio::net::TcpStream,url_str:
     use hyper::Client;
     let client = Client::new();
     let uri_res = url_str.parse();
-    
+    println!("URL:{}",url_str);
+
     match uri_res 
     {
         Ok(uri) => {
@@ -181,7 +186,7 @@ pub async fn load_page_from_addr(stream_out: &mut tokio::net::TcpStream,url_str:
 
                 if let Ok(buf) = buf_r
                 {
-                    stream_out.write_all(b"\x0c\x1E").await?;
+                    stream_out.write_all(b"\x0c").await?;
                     render_page_to_stream(stream_out,&buf, 0).await?;
                 }
                 
@@ -236,6 +241,7 @@ pub async fn render_page_to_stream(stream: &mut tokio::net::TcpStream,buf: &[u8]
             }
             if arg_no == 1
             {
+                println!("LINE:{}",str::from_utf8(v).unwrap());
                 line = Some(str::from_utf8(v).unwrap());
             }
             //println!("sep:{}",x);
@@ -290,7 +296,7 @@ pub async fn render_page_to_stream(stream: &mut tokio::net::TcpStream,buf: &[u8]
                     cur_ol = cur_ol + 1;
                 }
                 //stream.write(&buf[y..x-1]).await?;
-                stream.write(b"\r\n").await?;
+                //stream.write(b"\r\n").await?;
             }
 
             prev_ol = cur_ol;
