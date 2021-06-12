@@ -166,6 +166,8 @@ pub async fn de_escape(stream: &mut tokio::net::TcpStream, buf:&[u8]) -> Result<
 }
 
 
+
+
 // This translates the escape codes to create text data which is understood by the BBC micro.
 // It will return Ok(1) if double height characters are used.
 pub async fn de_escape_mode7_utf(stream: &mut tokio::net::TcpStream, buf:&[u8], line_b:bool) -> Result<u8,std::io::Error>
@@ -187,15 +189,13 @@ pub async fn de_escape_mode7_utf(stream: &mut tokio::net::TcpStream, buf:&[u8], 
             let mut ch = None;
             if prev == 0x1B
             {
-                if *i == 0x4d
+                /*if *i == 0x4d
                 {
                     repeat = 1;
-                }
+                }*/
                 println!("Esc:{}",*i-(0x40 as u8));
 
                 ch = Some(*i+(0x40 as u8));
-
-
             }
             else if *i != 0x1B 
             {
@@ -238,8 +238,36 @@ pub async fn de_escape_mode7_utf(stream: &mut tokio::net::TcpStream, buf:&[u8], 
             else
             {   
                 let mut base_code = 0xe000;
+
+                if seperated
+                {
+                    base_code = 0xe0c0;
+                }
+                if double_height
+                {
+                    if line_b
+                    {
+                        base_code = base_code + 0x80
+                    }
+                    else
+                    {
+                        base_code = base_code + 0x40
+                    }
+                }
+
+                if ch == 153
+                {
+                    seperated = false;
+                    ch = b' ';
+                }
+                if ch == 154
+                {
+                    seperated = true;
+                    ch = b' ';
+                }
                 if ch == 141
                 {
+                    repeat = 1;
                     double_height = true;
                     ch = b' ';
                 }
@@ -253,18 +281,29 @@ pub async fn de_escape_mode7_utf(stream: &mut tokio::net::TcpStream, buf:&[u8], 
                     ch = ch + 128;
                 }
                 
-                if graphics && ch > 160
+                if graphics && ch > 160 && ch <= 191
                 {
                     let mut buf = [0;3];
                     let x = char::from_u32(((ch-160) as u32) + base_code + 0x200);
                     
                     let x = x.unwrap();
 
-                    let result = x.encode_utf8(&mut buf);
+                    x.encode_utf8(&mut buf);
 
                     stream.write(&buf).await?;
                 }
-                else if graphics==true && ch > 32 && ch < 63 //&& ch != 35
+                if graphics && ch >= 224 
+                {
+                    let mut buf = [0;3];
+                    let x = char::from_u32(((ch-192) as u32) + base_code + 0x200);
+                    
+                    let x = x.unwrap();
+
+                    x.encode_utf8(&mut buf);
+
+                    stream.write(&buf).await?;
+                }
+                else if graphics==true && ch > 32 && ch <= 63 //&& ch != 35
                 {
                     let mut buf = [0;3];
                     let x = char::from_u32((ch as u32) + base_code + 0x200 - 32);
@@ -299,7 +338,7 @@ pub async fn de_escape_mode7_utf(stream: &mut tokio::net::TcpStream, buf:&[u8], 
         prev = *i;
         }
     }
-    stream.write_all("\u{001b}[37;1m".as_bytes()).await?;
+    stream.write_all("\u{001b}[37;1m\u{001b}[40m".as_bytes()).await?;
     stream.write_all(b"\r\n").await?;
     return Ok(repeat);
 }
@@ -389,11 +428,15 @@ pub async fn render_page_to_stream(stream: &mut tokio::net::TcpStream,buf: &[u8]
                 println!("LINE:{}",str::from_utf8(v).unwrap());
                 line = Some(str::from_utf8(v).unwrap());
             }
+
             //println!("sep:{}",x);
             //std::io::Write::write_all(&mut std::io::stdout(),&v).unwrap();
-
-            arg_no = arg_no + 1;
-            y = x + 1;
+            // [TODO] Fix
+            if arg_no < 2
+            {
+                arg_no = arg_no + 1;
+                y = x + 1;
+            }
         }
         if *i == b'\n'
         {
