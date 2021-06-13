@@ -5,8 +5,6 @@ use
     tokio::io::AsyncReadExt,
     tokio::net::TcpListener,
     std::str,
-    std::io::Seek,
-    std::fs::File,
     std::io::Read,
     async_trait::async_trait,
 };
@@ -26,14 +24,15 @@ pub async fn main()
             Ok(stream) => {
                 //let mut stream = stream;
                 println!("new client!");
-                
-                let n = handle_connection(stream.0).await;
+                tokio::spawn(async move {
+                    let n = handle_connection(stream.0).await;
 
-                match n
-                {
-                    Ok(_) => {},
-                    Err(e) => println!("Connection lost {}",e),
-                }
+                    match n
+                    {
+                        Ok(_) => {},
+                        Err(e) => println!("Connection lost {}",e),
+                    }
+                });
             }
             Err(_e) => { /* connection failed */ }
         }
@@ -281,12 +280,12 @@ impl TTIDecoder for Mode7UTF8Ansi
                         }
                     }
 
-                    if ch == 153
+                    if ch == 153 // Turn off seperated mode.
                     {
                         seperated = false;
                         ch = b' ';
                     }
-                    if ch == 154
+                    if ch == 154 // Turn on seperated mode.
                     {
                         seperated = true;
                         ch = b' ';
