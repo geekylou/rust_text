@@ -24,9 +24,35 @@ pub async fn main()
             Ok(stream) => {
                 //let mut stream = stream;
                 println!("new client!");
-                tokio::spawn(async move {
-                    let n = handle_connection(stream.0).await;
-
+                tokio::spawn(async move 
+                    {
+                    let mut n = Ok(0);
+                    {
+                        let mut stream = stream.0;
+                        loop
+                        { 
+                            let q = stream.write_all(b"Are you running on BBC Micro(b) or UTF-8 terminal emulator (U)?").await;
+                            match q
+                            {
+                                Ok(_) => {},
+                                Err(e) => break,
+                            }
+                            if let Ok(x) = read_key(&mut stream).await
+                            {
+             
+                                if x=='b'
+                                {
+                                    n = handle_connection(stream,&Mode7BeebAscii).await;
+                                    break;
+                                }
+                                else if x=='u'
+                                {
+                                    n = handle_connection(stream,&Mode7UTF8Ansi).await;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     match n
                     {
                         Ok(_) => {},
@@ -39,14 +65,14 @@ pub async fn main()
     }
 }
 
-pub async fn handle_connection(mut stream: tokio::net::TcpStream) -> Result<usize,tokio::io::Error>
+async fn handle_connection(mut stream: tokio::net::TcpStream,decoder:&impl TTIDecoder) -> Result<usize,tokio::io::Error>
 {   
-    let decoder = Mode7UTF8Ansi;
     println!("Connected.");
     let mut not_finished = true;
+
     stream.write_all(b"\x0c\x1E").await?; //Welcome To RustTex.\r\n").await?;
 
-    load_page_to_stream(&mut stream,"title.tti",-1,&decoder).await?;
+    load_page_to_stream(&mut stream,"title.tti",-1,decoder).await?;
     stream.write_all(b"\r\n").await?;
     while not_finished
     {
@@ -60,20 +86,20 @@ pub async fn handle_connection(mut stream: tokio::net::TcpStream) -> Result<usiz
         else if line == "help"
         {
             stream.write_all(b"\x0c\x1E").await?;
-            load_page_to_stream(&mut stream,"help.tti",-1,&decoder).await?;
+            load_page_to_stream(&mut stream,"help.tti",-1,decoder).await?;
         }
         else if line == "menu"
         {
             stream.write_all(b"\x0c\x1E").await?; //Welcome To RustTex.\r\n").await?;
 
-            load_page_to_stream(&mut stream,"title.tti",-1,&decoder).await?;
+            load_page_to_stream(&mut stream,"title.tti",-1,decoder).await?;
             stream.write_all(b"\r\n").await?;
         }
         else if line == "http"
         {
             stream.write_all(b"ADDR:").await?;
             let url = read_line(&mut stream).await?.to_lowercase();
-            load_page_from_addr(&mut stream, &url,&decoder).await?;
+            load_page_from_addr(&mut stream, &url,decoder).await?;
 
             stream.write_all(b"\r\n").await?;
         }
@@ -84,6 +110,20 @@ pub async fn handle_connection(mut stream: tokio::net::TcpStream) -> Result<usiz
         println!("Line:{}",line);
     }
     return Ok(0);
+}
+
+// TODO: Fix error handling support UTF-8 properly.
+pub async fn read_key(stream: &mut tokio::net::TcpStream) -> Result<char,tokio::io::Error>
+{
+    let mut buf = [0u8;1];
+    stream.read(&mut buf).await?;
+
+    if let Some(x) = char::from_u32(buf[0] as u32)
+    {
+        return Ok(x);
+    }
+    return Ok(' ');
+
 }
 
 pub async fn read_line(stream: &mut tokio::net::TcpStream) -> Result<String,tokio::io::Error>
@@ -133,17 +173,19 @@ struct Mode7UTF8Ansi;
 trait TTIDecoder 
 {
     // Static method signature; `Self` refers to the implementor type.
-    fn new() -> Self;
     async fn de_escape(&self,stream: &mut tokio::net::TcpStream, buf:&[u8], line_b:bool) -> Result<u8,std::io::Error>;
 }
 
-#[async_trait]
-impl TTIDecoder for Mode7BeebAscii
+impl Mode7BeebAscii
 {
     fn new() -> Mode7BeebAscii
     {
         Mode7BeebAscii{}
     }
+}
+#[async_trait]
+impl TTIDecoder for Mode7BeebAscii
+{
     // This translates the escape codes to create text data which is understood by the BBC micro.
     // It will return Ok(1) if double height characters are used.
     async fn de_escape(&self,stream: &mut tokio::net::TcpStream, buf:&[u8],_line_b:bool) -> Result<u8,std::io::Error>
@@ -185,14 +227,17 @@ impl TTIDecoder for Mode7BeebAscii
     }
 }
 
-
-#[async_trait]
-impl TTIDecoder for Mode7UTF8Ansi
+impl Mode7UTF8Ansi
 {
     fn new() -> Mode7UTF8Ansi
     {
         Mode7UTF8Ansi{}
     }
+}
+#[async_trait]
+impl TTIDecoder for Mode7UTF8Ansi
+{
+
     // This translates the escape codes to create text data which is understood by the BBC micro.
     // It will return Ok(1) if double height characters are used.
     async fn de_escape(&self,stream: &mut tokio::net::TcpStream, buf:&[u8], line_b:bool) -> Result<u8,std::io::Error>
