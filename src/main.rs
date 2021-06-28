@@ -7,8 +7,10 @@ use
     std::str,
     std::io::Read,
     async_trait::async_trait,
+    std::path::Path,
 };
 
+use std::collections::HashMap;
 
 #[tokio::main]
 pub async fn main() 
@@ -35,7 +37,7 @@ pub async fn main()
                             match q
                             {
                                 Ok(_) => {},
-                                Err(e) => break,
+                                Err(_e) => break,
                             }
                             if let Ok(x) = read_key(&mut stream).await
                             {
@@ -67,6 +69,8 @@ pub async fn main()
 
 async fn handle_connection(mut stream: tokio::net::TcpStream,decoder:&impl TTIDecoder) -> Result<usize,tokio::io::Error>
 {   
+    let mut page_stack = Vec::new();
+    let mut nav = None;
     println!("Connected.");
     let mut not_finished = true;
 
@@ -99,17 +103,91 @@ async fn handle_connection(mut stream: tokio::net::TcpStream,decoder:&impl TTIDe
         {
             stream.write_all(b"ADDR:").await?;
             let url = read_line(&mut stream).await?.to_lowercase();
-            load_page_from_addr(&mut stream, &url,decoder).await?;
-
+            nav = load_page_from_addr(&mut stream, &url,decoder).await?;
+            if let Some(nav) = &nav
+            {
+                if let Some(uri) = nav.uri.clone()
+                {
+                    page_stack.push(uri);
+                }
+            }
             stream.write_all(b"\r\n").await?;
         }
         else if line == "cls"
         {
             stream.write_all(b"\x0c").await?;
         }
+        else if line == "back"
+        {
+            if let Some(prev_uri) = page_stack.pop()
+            {
+                nav = load_page_from_uri(&mut stream, prev_uri,decoder).await?;
+            } 
+        }
+        else if line == "reload"
+        {
+            println!("try to reload");
+            if let Some(nav_r) = &nav
+            {
+                if let Some(uri) = nav_r.uri.clone()
+                {
+                    println!("Reload: {}",uri);
+                    nav = load_page_from_uri(&mut stream, uri,decoder).await?;
+                }
+            }
+        }
+        else
+        {           
+            let nav_t = select_link(&mut stream, &line,&nav,decoder).await?;
+            // We don't want to replace nav unless it not-null otherwise we won't be able to reload the current page!
+            if let Some(nav_r) = &nav
+            {
+                if let Some(uri) = nav_r.uri.clone()
+                {
+                    page_stack.push(uri);
+                }
+                nav = nav_t;
+            }
+        }
         println!("Line:{}",line);
     }
     return Ok(0);
+}
+
+async fn select_link(stream_out: &mut tokio::net::TcpStream,line: &str, navigation:&Option<Navigation>,decoder: &impl TTIDecoder) -> Result<Option<Navigation>,std::io::Error>
+{
+    if let Some(nav_r) = navigation
+    {
+        if let Some(link) = nav_r.links.get(line)
+        {
+            if  let Some(uri) = &nav_r.uri
+            {
+                if let Some(path) = Path::new(uri.path()).parent()
+                {
+                    use hyper::http::Uri;
+                    let mut uri_builder = Uri::builder();
+                    
+                    if let Some(scheme) = uri.scheme()
+                    {
+                        uri_builder = uri_builder.scheme(scheme.clone());
+                    }
+                    if let Some(authority) = uri.host()
+                    {
+                        uri_builder = uri_builder.authority(authority.clone());
+                    }
+                    
+                    if let Ok(uri) = uri_builder.path_and_query(String::from(path.to_str().unwrap())+&String::from("/")+link).build()
+                    {
+                        println!("Uri:{}",uri);
+                        return load_page_from_uri(stream_out, uri,decoder).await;
+                    }
+
+                    println!("Goto url:{} {}",link, path.to_str().unwrap());
+                }
+            }
+        }
+    }
+    return Ok(None);
 }
 
 // TODO: Fix error handling support UTF-8 properly.
@@ -136,7 +214,7 @@ pub async fn read_line(stream: &mut tokio::net::TcpStream) -> Result<String,toki
         let mut buf = [0u8;1];
         stream.read(&mut buf).await?;
 
-        println!("buf:{}",buf[0]);
+        //println!("buf:{}",buf[0]);
 
         match buf[0] 
         {
@@ -165,6 +243,13 @@ pub async fn read_line(stream: &mut tokio::net::TcpStream) -> Result<String,toki
 }
 
 use pretty_hex::*;
+
+struct Navigation
+{
+    uri:Option<hyper::Uri>,
+    start_page:i32,
+    links:HashMap<String,String>,
+}
 
 struct Mode7BeebAscii;
 struct Mode7UTF8Ansi;
@@ -244,7 +329,7 @@ impl TTIDecoder for Mode7UTF8Ansi
     {
         let mut repeat = 0;
 
-        println!("{}", buf.hex_dump());
+        //println!("{}", buf.hex_dump());
         let mut foreground_colour = 6;
         let mut double_height = false;
         let mut graphics = false;
@@ -263,7 +348,7 @@ impl TTIDecoder for Mode7UTF8Ansi
                     {
                         repeat = 1;
                     }*/
-                    println!("Esc:{}",*i-(0x40 as u8));
+                    //println!("Esc:{}",*i-(0x40 as u8));
 
                     ch = Some(*i+(0x40 as u8));
                 }
@@ -274,7 +359,7 @@ impl TTIDecoder for Mode7UTF8Ansi
             
             if let Some(mut ch) = ch 
             {
-                print!("ch:{} ",ch);
+                //print!("ch:{} ",ch);
                 if ch >= 145 && ch <= 151
                 {
                     graphics = true;
@@ -413,49 +498,76 @@ impl TTIDecoder for Mode7UTF8Ansi
         return Ok(repeat);
     }
 }
-
-async fn load_page_from_addr(stream_out: &mut tokio::net::TcpStream,url_str: &str,decoder: &impl TTIDecoder) -> Result<u8,std::io::Error>
+async fn load_page_from_addr(stream_out: &mut tokio::net::TcpStream,url_str: &str,decoder: &impl TTIDecoder) -> Result<Option<Navigation>,std::io::Error>
 {
-    use hyper::Client;
-    let client = Client::new();
-    let uri_res = url_str.parse();
+    let uri_res = url_str.parse::<hyper::Uri>();
     println!("URL:{}",url_str);
 
     match uri_res 
     {
         Ok(uri) => {
-            let resp_r = client.get(uri).await;
+            return load_page_from_uri(stream_out,uri,decoder).await;
+        }
 
-            if let Ok(resp) = resp_r
-            {
-                println!("Response: {}", resp.status());
-
-                let buf_r = hyper::body::to_bytes(resp.into_body()).await;
-
-                if let Ok(buf) = buf_r
-                {
-                    stream_out.write_all(b"\x0c").await?;
-                    render_page_to_stream(stream_out,&buf, -1,decoder).await?;
-                }
-                
-            }
-        },
-        Err(_e) => {stream_out.write_all(b"Couldn't load page.").await?;}
+        Err(_e) => {stream_out.write_all(b"Couldn't load page. Unable to parse URI.").await?;}
     }
-
-    return Ok(0);
+    return Ok(None);
 }
 
-
-
-async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &str, page_no:i32,decoder: &impl TTIDecoder) -> Result<i32,std::io::Error>
+async fn load_page_from_uri(stream_out: &mut tokio::net::TcpStream,uri: hyper::Uri,decoder: &impl TTIDecoder) -> Result<Option<Navigation>,std::io::Error>
 {
-   
+    use hyper::Client;
+    let client = Client::new();
+    let resp_r = client.get(uri.clone()).await;
+
+    if let Ok(resp) = resp_r
+    {
+        println!("Response: {}", resp.status());
+
+        let status = resp.status();
+        let buf_r = hyper::body::to_bytes(resp.into_body()).await;
+
+        if let Ok(buf) = buf_r 
+        {
+            if status.is_success()
+            {
+                stream_out.write_all(b"\x0c").await?;
+                let res = render_page_to_stream(stream_out,&buf, -1,decoder).await?;
+
+                if let Some(mut nav_r) = res
+                {
+                    println!("Add uri:{}",uri);
+                    nav_r.uri = Some(uri);
+                    return Ok(Some(nav_r));
+                }
+                
+                return Ok(res);
+            }
+            else
+            {   
+                stream_out.write_all(b"Could not load page:").await?;
+                stream_out.write_all(status.as_str().as_bytes()).await?;
+                stream_out.write_all(b"\r\n").await?;
+            } 
+        }
+        
+    }
+    else if let Err(e) = resp_r
+    {
+        stream_out.write_all(b"Could not load page:").await?;
+        stream_out.write_all(e.to_string().as_bytes()).await?;
+        stream_out.write_all(b"\r\n").await?;
+    }
+
+    return Ok(None);
+}
+
+async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &str, page_no:i32,decoder: &impl TTIDecoder) -> Result<Option<Navigation>,std::io::Error>
+{ 
     let mut buf = Vec::new();
     let mut file = std::fs::File::open(filename)?;
     
     let x = file.read_to_end(&mut buf).unwrap();
-
     
     println!("Buf:{}",x);
     //std::io::Write::write_all(&mut std::io::stdout(),&buf);
@@ -468,8 +580,9 @@ async fn load_page_to_stream(stream: &mut tokio::net::TcpStream,filename: &str, 
 // returns 
 // Ok(page_no) = Page no of the page found.
 // 
-async fn render_page_to_stream(stream: &mut tokio::net::TcpStream,buf: &[u8], requested_page_no:i32,decoder: &impl TTIDecoder) -> Result<i32,std::io::Error>
+async fn render_page_to_stream(stream: &mut tokio::net::TcpStream,buf: &[u8], requested_page_no:i32,decoder: &impl TTIDecoder) -> Result<Option<Navigation>,std::io::Error>
 {
+    let mut navigation = Navigation { links: HashMap::new(), start_page: -1, uri:None };
     let mut page_no = -1; // When this is -1 it indicates to the render engine that no page has been found.
 
     let mut x = 0;
@@ -491,11 +604,11 @@ async fn render_page_to_stream(stream: &mut tokio::net::TcpStream,buf: &[u8], re
             if arg_no == 0
             {
                 command = Some(str::from_utf8(v).unwrap());
-                println!("COMMAND:{}",str::from_utf8(v).unwrap());                
+                //println!("COMMAND:{}",str::from_utf8(v).unwrap());                
             }
             if arg_no == 1
             {
-                println!("LINE:{}",str::from_utf8(v).unwrap());
+                //println!("LINE:{}",str::from_utf8(v).unwrap());
                 line = Some(str::from_utf8(v).unwrap());
             }
 
@@ -536,7 +649,17 @@ async fn render_page_to_stream(stream: &mut tokio::net::TcpStream,buf: &[u8], re
                             page_no = page_no_found;
                         }
 
-                        println!("Page no:{}",str::from_utf8(&buf[y..x-1]).unwrap());
+                        //println!("Page no:{}",str::from_utf8(&buf[y..x-1]).unwrap());
+                    }
+                    if s == "LN"
+                    {
+                        if let Ok(st) = str::from_utf8(&buf[y..x-1])
+                        {
+                            if let Some(line_r) = line
+                            {
+                                navigation.links.insert(String::from(line_r),String::from(st));
+                            }
+                        }
                     }
                 }
                 None => {print = false;}
@@ -563,7 +686,7 @@ async fn render_page_to_stream(stream: &mut tokio::net::TcpStream,buf: &[u8], re
             if print
             {
                 //std::io::Write::write_all(&mut std::io::stdout(),&buf[y..x-1]).unwrap();
-                println!("{},{}:",cur_ol,prev_ol);
+                //println!("{},{}:",cur_ol,prev_ol);
 
                 if prev_ol+1 != cur_ol
                 {
@@ -586,5 +709,7 @@ async fn render_page_to_stream(stream: &mut tokio::net::TcpStream,buf: &[u8], re
         }
         x = x + 1;
     }
-    return Ok(page_no);
+
+    navigation.start_page = page_no;
+    return Ok(Some(navigation));
 }
